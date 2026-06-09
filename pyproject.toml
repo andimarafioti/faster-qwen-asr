@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=77.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "faster-qwen-asr"
+version = "0.1.0"
+description = "Fast CUDA-oriented Qwen3-ASR inference wrapper"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Andres Marafioti" }]
+requires-python = ">=3.10"
+keywords = ["asr", "qwen", "qwen3", "cuda", "torch", "speech", "transcription"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "qwen-asr>=0.0.6",
+    "torch>=2.5.1",
+    "numpy",
+    "soundfile",
+    "librosa",
+]
+
+[project.optional-dependencies]
+fast = [
+    "qwen-asr[vllm]>=0.0.6",
+]
+dev = [
+    "pytest>=8",
+    "ruff>=0.8",
+]
+
+[project.scripts]
+faster-qwen-asr = "faster_qwen_asr.cli:main"
+qwenasr-fast = "faster_qwen_asr.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/andimarafioti/faster-qwen-asr"
+Repository = "https://github.com/andimarafioti/faster-qwen-asr"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["faster_qwen_asr*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
