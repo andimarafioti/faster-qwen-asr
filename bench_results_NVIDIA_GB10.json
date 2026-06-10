@@ -1,0 +1,79 @@
+{
+  "date": "2026-06-10",
+  "repo_commit": "20ee9b1",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "driver": "580.126.09",
+    "pytorch": "2.11.0+cu130",
+    "cuda": "13.0"
+  },
+  "audio": {
+    "name": "jfk.wav",
+    "duration_sec": 11.0,
+    "sample_rate_hz": 16000,
+    "channels": 1
+  },
+  "settings": {
+    "backend": "torch",
+    "dtype": "bf16",
+    "language": "English",
+    "batch_size": 1,
+    "warmup": 1,
+    "runs": 5,
+    "metric": "best wall time after CUDA synchronize"
+  },
+  "results": {
+    "0.6B": {
+      "dynamic_decode": {
+        "best_sec": 0.3951,
+        "audio_sec": 11.0,
+        "rtf": 27.84
+      },
+      "cuda_graph_decode": {
+        "best_sec": 0.2863,
+        "audio_sec": 11.0,
+        "rtf": 38.42
+      },
+      "speedup": 1.38
+    },
+    "1.7B": {
+      "dynamic_decode": {
+        "best_sec": 1.5435,
+        "audio_sec": 11.0,
+        "rtf": 7.13
+      },
+      "cuda_graph_decode": {
+        "best_sec": 0.6296,
+        "audio_sec": 11.0,
+        "rtf": 17.47
+      },
+      "speedup": 2.45
+    }
+  },
+  "stage_profile_best_ms": {
+    "0.6B": {
+      "dynamic_decode": {
+        "prefill": 23.678,
+        "decode": 362.51,
+        "total": 396.072
+      },
+      "cuda_graph_decode": {
+        "prefill": 24.179,
+        "decode": 252.902,
+        "total": 287.198
+      }
+    },
+    "1.7B": {
+      "dynamic_decode": {
+        "prefill": 81.195,
+        "decode": 1533.138,
+        "total": 1646.427
+      },
+      "cuda_graph_decode": {
+        "prefill": 40.561,
+        "decode": 560.703,
+        "total": 615.467
+      }
+    }
+  }
+}
