@@ -14,6 +14,8 @@ from typing import Any
 from .audio import is_batch_audio
 from .model import ASRResult
 
+_EOS_TOKEN_IDS = frozenset({151645, 151643})
+
 
 @dataclass
 class _Chunk:
@@ -45,7 +47,7 @@ class TorchQwenASRBackend:
         self.attn_implementation = attn_implementation
         self.device = getattr(official_model, "device", None)
         self.dtype = getattr(official_model, "dtype", None)
-        self._graph_cache: dict[int, _DecoderGraph] = {}
+        self._graph: _DecoderGraph | None = None
         self._graph_failed = False
         if attn_implementation:
             _set_attention_implementation(self.model, attn_implementation)
@@ -193,28 +195,23 @@ class TorchQwenASRBackend:
         thinker = self.model.thinker
 
         with torch.inference_mode():
-            thinker.rope_deltas = None
-            outputs = thinker(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
-                input_features=inputs["input_features"],
-                feature_attention_mask=inputs["feature_attention_mask"],
-                use_cache=True,
-            )
-
+            generated = None
             if self._can_use_cuda_graph(torch):
                 try:
-                    graph_max_new_tokens = self._estimate_graph_max_new_tokens(wav)
-                    generated = self._decode_with_graph(
-                        outputs,
-                        max_new_tokens=graph_max_new_tokens,
-                    )
-                    if len(generated) >= graph_max_new_tokens < self.max_new_tokens:
-                        generated = self._decode_dynamic(outputs, inputs["attention_mask"])
+                    generated = self._decode_with_graph(inputs, wav)
                 except Exception:
                     self._graph_failed = True
-                    generated = self._decode_dynamic(outputs, inputs["attention_mask"])
-            else:
+                    generated = None
+
+            if generated is None:
+                thinker.rope_deltas = None
+                outputs = thinker(
+                    input_ids=inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    input_features=inputs["input_features"],
+                    feature_attention_mask=inputs["feature_attention_mask"],
+                    use_cache=True,
+                )
                 generated = self._decode_dynamic(outputs, inputs["attention_mask"])
 
         if not generated:
@@ -248,11 +245,10 @@ class TorchQwenASRBackend:
             device=current_attention_mask.device,
         )
         generated: list[int] = []
-        eos_token_ids = {151645, 151643}
 
         for _ in range(self.max_new_tokens):
             token_id = int(current_token.item())
-            if token_id in eos_token_ids:
+            if token_id in _EOS_TOKEN_IDS:
                 break
             generated.append(token_id)
 
@@ -282,27 +278,74 @@ class TorchQwenASRBackend:
         estimated = max(32, estimated)
         return min(self.max_new_tokens, estimated)
 
-    def _decode_with_graph(self, outputs: Any, *, max_new_tokens: int) -> list[int]:
-        input_len = int(outputs.past_key_values.get_seq_length())
-        required_cache_len = input_len + max_new_tokens + 4
-        max_cache_len = _round_up(required_cache_len, self.cuda_graph_stride)
-        graph = self._graph_cache.get(max_cache_len)
-        if graph is None:
+    def _decode_with_graph(self, inputs: Any, wav: Any) -> list[int] | None:
+        """Prefill into the graph's static cache, then replay the decode graph.
+
+        Returns None when the duration-based token budget was exhausted so the
+        caller can redo the request with the unbounded dynamic decoder.
+        """
+        import torch
+
+        thinker = self.model.thinker
+        input_len = int(inputs["input_ids"].shape[1])
+        graph_max_new_tokens = self._estimate_graph_max_new_tokens(wav)
+        required_cache_len = input_len + graph_max_new_tokens + 4
+
+        graph = self._graph
+        if graph is None or graph.max_cache_len < required_cache_len:
             graph = _DecoderGraph(
-                thinker=self.model.thinker,
-                max_cache_len=max_cache_len,
+                thinker=thinker,
+                max_cache_len=_round_up(required_cache_len, self.cuda_graph_stride),
                 dtype=self.model.dtype,
                 device=str(self.model.device),
             )
+            self._graph = graph
+
+        thinker.rope_deltas = None
+        outputs = thinker(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            input_features=inputs["input_features"],
+            feature_attention_mask=inputs["feature_attention_mask"],
+            use_cache=True,
+            past_key_values=graph.static_cache,
+            cache_position=torch.arange(input_len, device=self.model.device),
+        )
+
+        if not graph.captured:
             graph.capture(outputs, input_len=input_len)
-            self._graph_cache[max_cache_len] = graph
-        return graph.run(outputs, input_len=input_len, max_new_tokens=max_new_tokens)
+        generated = graph.run(outputs, input_len=input_len, max_new_tokens=graph_max_new_tokens)
+        if len(generated) >= graph_max_new_tokens < self.max_new_tokens:
+            return None
+        return generated
 
 
 class _DecoderGraph:
-    """CUDA graph for one-token Qwen3-ASR text decode."""
+    """Self-feeding CUDA graph for one-token Qwen3-ASR text decode.
 
-    def __init__(self, *, thinker: Any, max_cache_len: int, dtype: Any, device: str) -> None:
+    The captured graph contains the full token feedback loop: position/mask
+    computation from `cache_position`, embedding lookup, decoder forward,
+    argmax, the write of the new token into a ring buffer, and the advance of
+    `cache_position`. Replays therefore need no host work at all; the host only
+    syncs once every `eos_check_interval` replays to scan for EOS. Replays past
+    EOS within a batch are wasted GPU work, and on GB10 one replay costs far
+    more than the ~60us host readback, so the default interval is 1.
+
+    Prefill happens directly into `static_cache` (the caller passes it as
+    `past_key_values`), so no KV copy is needed between prefill and decode.
+    Because `input_len` only enters the graph through tensor *values*, one
+    captured graph serves any prompt length that fits in `max_cache_len`.
+    """
+
+    def __init__(
+        self,
+        *,
+        thinker: Any,
+        max_cache_len: int,
+        dtype: Any,
+        device: str,
+        eos_check_interval: int = 1,
+    ) -> None:
         import torch
         from transformers import StaticCache
 
@@ -311,112 +354,76 @@ class _DecoderGraph:
         self.max_cache_len = int(max_cache_len)
         self.dtype = dtype
         self.device = device
+        self.eos_check_interval = max(1, int(eos_check_interval))
         device_index = torch.device(device).index
         self.device_index = device_index if device_index is not None else torch.cuda.current_device()
 
         self.static_cache = StaticCache(config=self.text_model.config, max_cache_len=self.max_cache_len)
         self.input_id_buf = torch.zeros((1, 1), dtype=torch.long, device=device)
-        self.output_id_buf = torch.zeros((1, 1), dtype=torch.long, device=device)
         self.cache_position = torch.zeros(1, dtype=torch.long, device=device)
-        self.position_ids = torch.zeros(3, 1, 1, dtype=torch.long, device=device)
-        self.rope_deltas = torch.zeros(1, 1, dtype=torch.long, device=device)
-        self.attn_mask = None
-        self.attn_masks = None
+        self.rope_delta = torch.zeros(1, dtype=torch.long, device=device)
+        self.token_ring = torch.zeros(self.max_cache_len, dtype=torch.long, device=device)
+        self.step_buf = torch.zeros(1, dtype=torch.long, device=device)
+        self.kv_arange = torch.arange(self.max_cache_len, device=device).view(1, 1, 1, -1)
+        self.mask_keep = torch.zeros((), dtype=dtype, device=device)
+        self.mask_drop = torch.full((), torch.finfo(dtype).min, dtype=dtype, device=device)
         self.graph = None
         self.captured = False
-
-    def _fill_static_cache(self, dynamic_cache: Any) -> None:
-        import torch
-
-        self.static_cache.reset()
-        for layer_idx in range(len(dynamic_cache.layers)):
-            key_states, value_states = dynamic_cache[layer_idx]
-            seq_len = key_states.shape[2]
-            if seq_len > self.max_cache_len:
-                raise RuntimeError(
-                    f"Prefill length {seq_len} exceeds CUDA graph cache length {self.max_cache_len}."
-                )
-            self.static_cache.update(
-                key_states,
-                value_states,
-                layer_idx,
-                {"cache_position": torch.arange(seq_len, device=key_states.device)},
-            )
-
-    def _build_attention_masks(self) -> None:
-        import torch
-        from transformers.masking_utils import create_causal_mask
-
-        dummy = torch.zeros(
-            1,
-            1,
-            self.text_model.config.hidden_size,
-            dtype=self.dtype,
-            device=self.device,
-        )
-        self.attn_masks = [
-            create_causal_mask(
-                config=self.text_model.config,
-                input_embeds=dummy,
-                attention_mask=None,
-                cache_position=torch.tensor([pos], device=self.device),
-                past_key_values=self.static_cache,
-            )
-            for pos in range(self.max_cache_len)
-        ]
-        self.attn_mask = self.attn_masks[0].clone()
-
-    def _set_position(self, position: int) -> None:
-        self.cache_position[0] = position
-        self.position_ids.copy_(
-            (self.cache_position.view(1, 1, 1) + self.rope_deltas.view(1, 1, 1)).expand(3, 1, 1)
-        )
-        self.attn_mask.copy_(self.attn_masks[position])
 
     def _decode_step(self) -> None:
         import torch
 
+        position_ids = (self.cache_position + self.rope_delta).view(1, 1, 1).expand(3, 1, 1)
+        attn_mask = torch.where(
+            self.kv_arange <= self.cache_position.view(1, 1, 1, 1),
+            self.mask_keep,
+            self.mask_drop,
+        )
         embeds = self.thinker.get_input_embeddings()(self.input_id_buf)
         outputs = self.text_model(
             inputs_embeds=embeds,
-            attention_mask=self.attn_mask,
+            attention_mask=attn_mask,
             past_key_values=self.static_cache,
             use_cache=True,
             cache_position=self.cache_position,
-            position_ids=self.position_ids,
+            position_ids=position_ids,
         )
-        logits = self.thinker.lm_head(outputs.last_hidden_state)
-        self.output_id_buf.copy_(torch.argmax(logits[:, -1, :], dim=-1, keepdim=True))
+        logits = self.thinker.lm_head(outputs.last_hidden_state[:, -1, :])
+        next_token = torch.argmax(logits, dim=-1)
+        self.token_ring.index_copy_(0, self.step_buf, next_token)
+        self.input_id_buf.copy_(next_token.view(1, 1))
+        self.cache_position.add_(1)
+        self.step_buf.add_(1)
+
+    def _seed(self, prefill_outputs: Any, input_len: int) -> Any:
+        import torch
+
+        self.rope_delta.copy_(
+            prefill_outputs.rope_deltas.to(device=self.device, dtype=torch.long).reshape(-1)[:1]
+        )
+        first_token = torch.argmax(prefill_outputs.logits[:, -1, :], dim=-1)
+        self.input_id_buf.copy_(first_token.view(1, 1))
+        self.cache_position.fill_(input_len)
+        self.step_buf.zero_()
+        return first_token
 
     def capture(self, prefill_outputs: Any, *, input_len: int) -> None:
         import torch
 
-        self._fill_static_cache(prefill_outputs.past_key_values)
-        self._build_attention_masks()
-        self.rope_deltas.copy_(prefill_outputs.rope_deltas.to(device=self.device, dtype=torch.long))
-        current_token = torch.argmax(prefill_outputs.logits[:, -1, :], dim=-1, keepdim=True)
-        self.input_id_buf.copy_(current_token)
-        self._set_position(input_len)
-
+        self._seed(prefill_outputs, input_len)
         for _ in range(3):
             self._decode_step()
         torch.cuda.synchronize()
-
-        self._fill_static_cache(prefill_outputs.past_key_values)
-        self.input_id_buf.copy_(current_token)
-        self._set_position(input_len)
 
         with torch.cuda.device(self.device_index):
             stream = torch.cuda.Stream()
             stream.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(stream):
+                self._seed(prefill_outputs, input_len)
                 self._decode_step()
                 torch.cuda.synchronize()
 
-                self._fill_static_cache(prefill_outputs.past_key_values)
-                self.input_id_buf.copy_(current_token)
-                self._set_position(input_len)
-
+                self._seed(prefill_outputs, input_len)
                 self.graph = torch.cuda.CUDAGraph()
                 with torch.cuda.graph(self.graph):
                     self._decode_step()
@@ -426,29 +433,25 @@ class _DecoderGraph:
         self.captured = True
 
     def run(self, prefill_outputs: Any, *, input_len: int, max_new_tokens: int) -> list[int]:
-        import torch
+        first_token = self._seed(prefill_outputs, input_len)
+        first = int(first_token.item())
+        if first in _EOS_TOKEN_IDS:
+            return []
+        generated = [first]
 
-        self._fill_static_cache(prefill_outputs.past_key_values)
-        self.rope_deltas.copy_(prefill_outputs.rope_deltas.to(device=self.device, dtype=torch.long))
-        current_token = torch.argmax(prefill_outputs.logits[:, -1, :], dim=-1, keepdim=True)
-        generated: list[int] = []
-        eos_token_ids = {151645, 151643}
-
-        for step in range(max_new_tokens):
-            token_id = int(current_token.item())
-            if token_id in eos_token_ids:
-                break
-            generated.append(token_id)
-
-            position = input_len + step
-            if position >= self.max_cache_len:
-                raise RuntimeError(
-                    f"Decode position {position} exceeds CUDA graph cache length {self.max_cache_len}."
-                )
-            self.input_id_buf.copy_(current_token)
-            self._set_position(position)
-            self.graph.replay()
-            current_token = self.output_id_buf.clone()
+        # Step s decodes at cache position input_len + s, which must stay
+        # inside the static cache even for replays wasted past EOS.
+        budget = min(max_new_tokens - 1, self.max_cache_len - input_len)
+        done = 0
+        while done < budget:
+            steps = min(self.eos_check_interval, budget - done)
+            for _ in range(steps):
+                self.graph.replay()
+            for token_id in self.token_ring[done : done + steps].tolist():
+                if token_id in _EOS_TOKEN_IDS:
+                    return generated
+                generated.append(token_id)
+            done += steps
 
         return generated
 
