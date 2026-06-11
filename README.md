@@ -53,6 +53,7 @@ bf16 on some clips, so spot-check on your own data before enabling it.
 ```bash
 ./benchmark.sh both sample.wav
 python benchmarks/throughput.py sample.wav --size 0.6B --backend torch --repeat 4
+python benchmarks/vllm_direct.py sample.wav --size 0.6B
 python benchmarks/profile_torch.py sample.wav --size 0.6B --language English
 python benchmarks/compare_parakeet.py sample.wav --qwen-size 0.6B
 ```
@@ -76,10 +77,22 @@ decode step.
 
 **Full precision (bf16)**
 
-| Model | qwen-asr latency | qwen-asr RTF | faster-qwen-asr latency | faster-qwen-asr RTF | Speedup |
+| Model | qwen-asr transformers | direct vLLM | faster-qwen-asr | Speedup vs transformers | Speedup vs vLLM |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-ASR-0.6B | 0.4047s | 26.94 | 0.2044s | 53.45 | 1.98x |
-| Qwen3-ASR-1.7B | 0.8131s | 13.41 | 0.4804s | 22.73 | 1.69x |
+| Qwen3-ASR-0.6B | 0.4047s / RTF 26.94 | 0.2933s / RTF 37.24 | 0.2044s / RTF 53.45 | 1.98x | 1.43x |
+| Qwen3-ASR-1.7B | 0.8131s / RTF 13.41 | 0.7361s / RTF 14.84 | 0.4804s / RTF 22.73 | 1.69x | 1.53x |
+
+The direct vLLM numbers use the official README's `vllm.LLM(...).chat(...)`
+deployment path on a CUDA 13-capable stack: vLLM 0.19.1+cu130,
+PyTorch 2.10.0+cu130, transformers 5.6.1, `max_model_len=4096`,
+`gpu_memory_utilization=0.65`, asynchronous scheduling disabled, and vLLM's
+compile/CUDA graph path enabled. The exact `qwen-asr[vllm]` package stack
+(`qwen-asr` 0.0.6, vLLM 0.14.0) could not be benchmarked on this GB10 CUDA 13
+host because the available vLLM 0.14 wheel was linked against CUDA 12
+(`libcudart.so.12`).
+
+For reference, direct vLLM in eager mode (compile/CUDA graphs disabled) measured
+0.3363s / RTF 32.47 for 0.6B and 0.7770s / RTF 14.06 for 1.7B.
 
 **int8 weight-only (opt-in, `--quantization int8`)**
 
