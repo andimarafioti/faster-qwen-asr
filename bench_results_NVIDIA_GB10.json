@@ -19,11 +19,22 @@
     "batch_size": 1,
     "warmup": "1+ (graph runs include the one-time torch.compile in warmup)",
     "runs": 5,
-    "metric": "best wall time after CUDA synchronize"
+    "metric": "best wall time after CUDA synchronize for Torch paths; direct vLLM uses synchronous llm.chat wall time"
   },
   "baseline": {
     "name": "qwen-asr (official, https://github.com/QwenLM/Qwen3-ASR)",
     "configuration": "transformers backend, SDPA, generate()-based decoding, called directly without this wrapper"
+  },
+  "direct_vllm_baseline": {
+    "name": "direct vLLM Qwen3-ASR path from the official README",
+    "configuration": "vllm.LLM(...).chat(...) with audio_url data URL input, max_model_len=4096, gpu_memory_utilization=0.65, async_scheduling=False, max_tokens=256, best of five after one warmup",
+    "runtime": {
+      "vllm": "0.19.1+cu130",
+      "pytorch": "2.10.0+cu130",
+      "transformers": "5.6.1",
+      "cuda": "13.0"
+    },
+    "package_stack_note": "The exact qwen-asr[vllm] package stack (qwen-asr 0.0.6, vLLM 0.14.0, transformers 4.57.6) could not be benchmarked on this GB10 CUDA 13 host because the available vLLM 0.14 wheel was linked against CUDA 12 (libcudart.so.12)."
   },
   "results": {
     "0.6B": {
@@ -31,6 +42,20 @@
         "best_sec": 0.4047,
         "audio_sec": 10.9,
         "rtf": 26.94
+      },
+      "direct_vllm_compiled_graphs": {
+        "best_sec": 0.2933,
+        "audio_sec": 10.9227,
+        "rtf": 37.24,
+        "speedup_vs_qwen_asr_transformers": 1.38,
+        "faster_qwen_asr_bf16_speedup_vs_direct_vllm": 1.43,
+        "note": "vLLM compile/CUDA graph path enabled"
+      },
+      "direct_vllm_eager": {
+        "best_sec": 0.3363,
+        "audio_sec": 10.9227,
+        "rtf": 32.47,
+        "note": "vLLM enforce_eager=True; torch.compile and CUDA graphs disabled"
       },
       "faster_qwen_asr_dynamic_decode": {
         "best_sec": 0.4767,
@@ -59,6 +84,20 @@
         "audio_sec": 10.9,
         "rtf": 13.41
       },
+      "direct_vllm_compiled_graphs": {
+        "best_sec": 0.7361,
+        "audio_sec": 10.9227,
+        "rtf": 14.84,
+        "speedup_vs_qwen_asr_transformers": 1.1,
+        "faster_qwen_asr_bf16_speedup_vs_direct_vllm": 1.53,
+        "note": "vLLM compile/CUDA graph path enabled"
+      },
+      "direct_vllm_eager": {
+        "best_sec": 0.777,
+        "audio_sec": 10.9227,
+        "rtf": 14.06,
+        "note": "vLLM enforce_eager=True; torch.compile and CUDA graphs disabled"
+      },
       "faster_qwen_asr_dynamic_decode": {
         "best_sec": 0.8989,
         "audio_sec": 10.9,
@@ -83,6 +122,7 @@
   },
   "notes": {
     "configuration": "faster-qwen-asr CUDA graph decode is the default path: self-feeding captured graph (token feedback, mask and position computation in-graph) with a torch.compile'd (max-autotune-no-cudagraphs) decode step, prefill written directly into the StaticCache.",
+    "direct_vllm": "Direct vLLM returns raw Qwen ASR text such as 'language English<asr_text>...' when not routed through qwen_asr.parse_asr_output; timings measure generation only, not wrapper parsing.",
     "correctness": "bf16 transcripts byte-identical to the pre-optimization implementation on a 4-clip x 2-size x 2-path verification set. int8: 7/8 transcripts identical, one clip changed a single word.",
     "previous_baseline": "Pre-optimization (commit 20ee9b1, 11.0s JFK clip): 0.6B dynamic 0.3951s / graph 0.2863s; 1.7B dynamic 1.5435s / graph 0.6296s."
   }
