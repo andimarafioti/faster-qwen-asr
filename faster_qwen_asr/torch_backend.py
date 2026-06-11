@@ -36,6 +36,7 @@ class TorchQwenASRBackend:
         use_cuda_graph: bool = True,
         cuda_graph_stride: int = 128,
         use_torch_compile: bool = True,
+        quantization: str | None = None,
         attn_implementation: str | None = None,
     ) -> None:
         self.official_model = official_model
@@ -54,6 +55,9 @@ class TorchQwenASRBackend:
         self._graph_failed = False
         if attn_implementation:
             _set_attention_implementation(self.model, attn_implementation)
+        if quantization:
+            _apply_quantization(self.model, quantization)
+        self.quantization = quantization
 
     @classmethod
     def from_pretrained(
@@ -65,6 +69,7 @@ class TorchQwenASRBackend:
         use_cuda_graph: bool = True,
         cuda_graph_stride: int = 128,
         use_torch_compile: bool = True,
+        quantization: str | None = None,
         attn_implementation: str | None = None,
         forced_aligner: str | None = None,
         forced_aligner_kwargs: dict[str, Any] | None = None,
@@ -87,6 +92,7 @@ class TorchQwenASRBackend:
             use_cuda_graph=use_cuda_graph,
             cuda_graph_stride=cuda_graph_stride,
             use_torch_compile=use_torch_compile,
+            quantization=quantization,
             attn_implementation=attn_implementation,
         )
 
@@ -510,6 +516,27 @@ class _DecoderGraph:
             done += steps
 
         return generated
+
+
+def _apply_quantization(model: Any, quantization: str) -> None:
+    """Quantize the text decoder weights in place.
+
+    Only the thinker's text model and lm_head are quantized: batch-1 decode is
+    bound by reading their weights, while the audio tower runs once per request
+    in larger matmuls where bf16 is fine and quality risk is not worth it.
+    """
+    if quantization != "int8":
+        raise ValueError(f"Unsupported quantization: {quantization!r} (expected 'int8')")
+    try:
+        from torchao.quantization import Int8WeightOnlyConfig, quantize_
+    except ImportError as exc:
+        raise ImportError(
+            "quantization='int8' requires torchao. Install it with `pip install torchao`."
+        ) from exc
+
+    thinker = model.thinker
+    quantize_(thinker.model, Int8WeightOnlyConfig())
+    quantize_(thinker.lm_head, Int8WeightOnlyConfig())
 
 
 def _resolve_eos_token_ids(model: Any) -> frozenset[int]:
