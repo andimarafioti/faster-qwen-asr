@@ -192,8 +192,6 @@ class TorchQwenASRBackend:
         inputs = self.processor(text=[prompt], audio=[wav], return_tensors="pt", padding=True)
         inputs = inputs.to(self.model.device).to(self.model.dtype)
 
-        thinker = self.model.thinker
-
         with torch.inference_mode():
             generated = None
             if self._can_use_cuda_graph(torch):
@@ -204,15 +202,10 @@ class TorchQwenASRBackend:
                     generated = None
 
             if generated is None:
-                thinker.rope_deltas = None
-                outputs = thinker(
-                    input_ids=inputs["input_ids"],
-                    attention_mask=inputs["attention_mask"],
-                    input_features=inputs["input_features"],
-                    feature_attention_mask=inputs["feature_attention_mask"],
-                    use_cache=True,
+                last_logits, past_key_values, _ = self._prefill(inputs)
+                generated = self._decode_dynamic(
+                    last_logits, past_key_values, inputs["attention_mask"]
                 )
-                generated = self._decode_dynamic(outputs, inputs["attention_mask"])
 
         if not generated:
             return ""
@@ -232,12 +225,54 @@ class TorchQwenASRBackend:
             and str(self.model.device).startswith("cuda")
         )
 
-    def _decode_dynamic(self, outputs: Any, attention_mask: Any) -> list[int]:
+    def _prefill(
+        self,
+        inputs: Any,
+        *,
+        past_key_values: Any = None,
+        cache_position: Any = None,
+    ) -> tuple[Any, Any, Any]:
+        """Prefill the decoder, computing lm_head only for the last position.
+
+        The thinker's forward runs lm_head over every prompt position (vocab
+        ~151k) even though greedy decode only needs the final one, so this
+        replicates its prompt preparation and calls the text model directly.
+        Returns (last_position_logits, past_key_values, rope_deltas).
+        """
+        thinker = self.model.thinker
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs["attention_mask"]
+
+        inputs_embeds = thinker.get_input_embeddings()(input_ids)
+        audio_features = thinker.get_audio_features(
+            inputs["input_features"],
+            feature_attention_mask=inputs["feature_attention_mask"],
+        ).to(inputs_embeds.device, inputs_embeds.dtype)
+        audio_mask = thinker.get_placeholder_mask(input_ids, inputs_embeds=inputs_embeds)
+        inputs_embeds = inputs_embeds.masked_scatter(audio_mask, audio_features)
+
+        delta0 = (1 - attention_mask).sum(dim=-1).unsqueeze(1)
+        position_ids, rope_deltas = thinker.get_rope_index(attention_mask)
+        rope_deltas = rope_deltas - delta0
+        # The per-step thinker() calls in the dynamic path read this state.
+        thinker.rope_deltas = rope_deltas
+
+        outputs = thinker.model(
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=True,
+            cache_position=cache_position,
+        )
+        last_logits = thinker.lm_head(outputs.last_hidden_state[:, -1:, :])
+        return last_logits, outputs.past_key_values, rope_deltas
+
+    def _decode_dynamic(self, last_logits: Any, past_key_values: Any, attention_mask: Any) -> list[int]:
         import torch
 
         thinker = self.model.thinker
-        past_key_values = outputs.past_key_values
-        current_token = torch.argmax(outputs.logits[:, -1, :], dim=-1, keepdim=True)
+        current_token = torch.argmax(last_logits[:, -1, :], dim=-1, keepdim=True)
         current_attention_mask = attention_mask
         one = torch.ones(
             (current_attention_mask.shape[0], 1),
@@ -301,20 +336,17 @@ class TorchQwenASRBackend:
             )
             self._graph = graph
 
-        thinker.rope_deltas = None
-        outputs = thinker(
-            input_ids=inputs["input_ids"],
-            attention_mask=inputs["attention_mask"],
-            input_features=inputs["input_features"],
-            feature_attention_mask=inputs["feature_attention_mask"],
-            use_cache=True,
+        last_logits, _, rope_deltas = self._prefill(
+            inputs,
             past_key_values=graph.static_cache,
             cache_position=torch.arange(input_len, device=self.model.device),
         )
 
         if not graph.captured:
-            graph.capture(outputs, input_len=input_len)
-        generated = graph.run(outputs, input_len=input_len, max_new_tokens=graph_max_new_tokens)
+            graph.capture(last_logits, rope_deltas, input_len=input_len)
+        generated = graph.run(
+            last_logits, rope_deltas, input_len=input_len, max_new_tokens=graph_max_new_tokens
+        )
         if len(generated) >= graph_max_new_tokens < self.max_new_tokens:
             return None
         return generated
@@ -395,22 +427,22 @@ class _DecoderGraph:
         self.cache_position.add_(1)
         self.step_buf.add_(1)
 
-    def _seed(self, prefill_outputs: Any, input_len: int) -> Any:
+    def _seed(self, last_logits: Any, rope_deltas: Any, input_len: int) -> Any:
         import torch
 
         self.rope_delta.copy_(
-            prefill_outputs.rope_deltas.to(device=self.device, dtype=torch.long).reshape(-1)[:1]
+            rope_deltas.to(device=self.device, dtype=torch.long).reshape(-1)[:1]
         )
-        first_token = torch.argmax(prefill_outputs.logits[:, -1, :], dim=-1)
+        first_token = torch.argmax(last_logits[:, -1, :], dim=-1)
         self.input_id_buf.copy_(first_token.view(1, 1))
         self.cache_position.fill_(input_len)
         self.step_buf.zero_()
         return first_token
 
-    def capture(self, prefill_outputs: Any, *, input_len: int) -> None:
+    def capture(self, last_logits: Any, rope_deltas: Any, *, input_len: int) -> None:
         import torch
 
-        self._seed(prefill_outputs, input_len)
+        self._seed(last_logits, rope_deltas, input_len)
         for _ in range(3):
             self._decode_step()
         torch.cuda.synchronize()
@@ -419,11 +451,11 @@ class _DecoderGraph:
             stream = torch.cuda.Stream()
             stream.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(stream):
-                self._seed(prefill_outputs, input_len)
+                self._seed(last_logits, rope_deltas, input_len)
                 self._decode_step()
                 torch.cuda.synchronize()
 
-                self._seed(prefill_outputs, input_len)
+                self._seed(last_logits, rope_deltas, input_len)
                 self.graph = torch.cuda.CUDAGraph()
                 with torch.cuda.graph(self.graph):
                     self._decode_step()
@@ -432,8 +464,8 @@ class _DecoderGraph:
         torch.cuda.synchronize()
         self.captured = True
 
-    def run(self, prefill_outputs: Any, *, input_len: int, max_new_tokens: int) -> list[int]:
-        first_token = self._seed(prefill_outputs, input_len)
+    def run(self, last_logits: Any, rope_deltas: Any, *, input_len: int, max_new_tokens: int) -> list[int]:
+        first_token = self._seed(last_logits, rope_deltas, input_len)
         first = int(first_token.item())
         if first in _EOS_TOKEN_IDS:
             return []
