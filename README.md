@@ -63,29 +63,33 @@ baseline against CUDA graph decode.
 ### NVIDIA GB10
 
 Measured on June 11, 2026 with PyTorch 2.11.0+cu130, CUDA 13.0, driver
-580.126.09. Audio was a 10.9s 16 kHz mono English clip, forced English,
-`--backend torch --dtype bf16`, warmups excluded (the first CUDA graph request
-pays the one-time `torch.compile` cost), five timed runs. The baseline is the
-plain Torch dynamic greedy decode (`--no-cuda-graph`); the CUDA graph column is
-the default configuration (self-feeding captured graph with a compiled decode
-step). RTF > 1.0 is faster than real time.
+580.126.09. Audio was a 10.9s 16 kHz mono English clip, forced English, bf16,
+batch size 1, warmups excluded (the first CUDA graph request pays the one-time
+`torch.compile` cost), best of five timed runs. RTF > 1.0 is faster than real
+time.
+
+The baseline is the official [`qwen-asr`](https://github.com/QwenLM/Qwen3-ASR)
+toolkit running its transformers backend (SDPA, `generate()`-based decoding),
+called directly without this wrapper. The faster-qwen-asr column is this
+repo's default Torch path: self-feeding CUDA graph decode with a compiled
+decode step.
 
 **Full precision (bf16)**
 
-| Model | Dynamic decode latency | Dynamic RTF | CUDA graph latency | CUDA graph RTF | Speedup |
+| Model | qwen-asr latency | qwen-asr RTF | faster-qwen-asr latency | faster-qwen-asr RTF | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-ASR-0.6B | 0.4767s | 22.91 | 0.2044s | 53.45 | 2.33x |
-| Qwen3-ASR-1.7B | 0.8989s | 12.15 | 0.4804s | 22.73 | 1.87x |
+| Qwen3-ASR-0.6B | 0.4047s | 26.94 | 0.2044s | 53.45 | 1.98x |
+| Qwen3-ASR-1.7B | 0.8131s | 13.41 | 0.4804s | 22.73 | 1.69x |
 
 **int8 weight-only (opt-in, `--quantization int8`)**
 
-| Model | Latency | RTF | Speedup vs dynamic | Speedup vs bf16 graph |
+| Model | Latency | RTF | Speedup vs qwen-asr | Speedup vs bf16 |
 | --- | ---: | ---: | ---: | ---: |
-| Qwen3-ASR-0.6B | 0.1458s | 74.89 | 3.27x | 1.40x |
-| Qwen3-ASR-1.7B | 0.3117s | 35.04 | 2.88x | 1.54x |
+| Qwen3-ASR-0.6B | 0.1458s | 74.89 | 2.78x | 1.40x |
+| Qwen3-ASR-1.7B | 0.3117s | 35.04 | 2.61x | 1.54x |
 
-The bf16 configurations produce transcripts byte-identical to the
-pre-optimization implementation. int8 quantizes the text decoder weights, so
+The bf16 fast path produces transcripts byte-identical to its greedy dynamic
+decode on the verification set. int8 quantizes the text decoder weights, so
 its transcripts are not guaranteed identical to bf16: on a 4-clip verification
 set, 7/8 matched exactly and one clip changed a single word.
 

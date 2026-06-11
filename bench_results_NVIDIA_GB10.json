@@ -14,60 +14,75 @@
     "channels": 1
   },
   "settings": {
-    "backend": "torch",
     "dtype": "bf16",
     "language": "English",
     "batch_size": 1,
-    "warmup": "1 (dynamic) / 2 (graph, includes one-time torch.compile)",
+    "warmup": "1+ (graph runs include the one-time torch.compile in warmup)",
     "runs": 5,
     "metric": "best wall time after CUDA synchronize"
   },
+  "baseline": {
+    "name": "qwen-asr (official, https://github.com/QwenLM/Qwen3-ASR)",
+    "configuration": "transformers backend, SDPA, generate()-based decoding, called directly without this wrapper"
+  },
   "results": {
     "0.6B": {
-      "dynamic_decode": {
+      "qwen_asr_official": {
+        "best_sec": 0.4047,
+        "audio_sec": 10.9,
+        "rtf": 26.94
+      },
+      "faster_qwen_asr_dynamic_decode": {
         "best_sec": 0.4767,
         "audio_sec": 10.9,
-        "rtf": 22.91
+        "rtf": 22.91,
+        "note": "internal fallback path (--no-cuda-graph), manual greedy decode"
       },
-      "cuda_graph_decode": {
+      "faster_qwen_asr_cuda_graph": {
         "best_sec": 0.2044,
         "audio_sec": 10.9,
         "rtf": 53.45,
-        "speedup_vs_dynamic": 2.33
+        "speedup_vs_qwen_asr": 1.98
       },
-      "cuda_graph_decode_int8": {
+      "faster_qwen_asr_cuda_graph_int8": {
         "best_sec": 0.1458,
         "audio_sec": 10.9,
         "rtf": 74.89,
-        "speedup_vs_dynamic": 3.27,
+        "speedup_vs_qwen_asr": 2.78,
         "speedup_vs_bf16_graph": 1.4,
         "quantization": "int8 weight-only (torchao), text decoder + lm_head only, opt-in"
       }
     },
     "1.7B": {
-      "dynamic_decode": {
+      "qwen_asr_official": {
+        "best_sec": 0.8131,
+        "audio_sec": 10.9,
+        "rtf": 13.41
+      },
+      "faster_qwen_asr_dynamic_decode": {
         "best_sec": 0.8989,
         "audio_sec": 10.9,
-        "rtf": 12.15
+        "rtf": 12.15,
+        "note": "internal fallback path (--no-cuda-graph), manual greedy decode"
       },
-      "cuda_graph_decode": {
+      "faster_qwen_asr_cuda_graph": {
         "best_sec": 0.4804,
         "audio_sec": 10.9,
         "rtf": 22.73,
-        "speedup_vs_dynamic": 1.87
+        "speedup_vs_qwen_asr": 1.69
       },
-      "cuda_graph_decode_int8": {
+      "faster_qwen_asr_cuda_graph_int8": {
         "best_sec": 0.3117,
         "audio_sec": 10.9,
         "rtf": 35.04,
-        "speedup_vs_dynamic": 2.88,
+        "speedup_vs_qwen_asr": 2.61,
         "speedup_vs_bf16_graph": 1.54,
         "quantization": "int8 weight-only (torchao), text decoder + lm_head only, opt-in"
       }
     }
   },
   "notes": {
-    "configuration": "CUDA graph decode is the default path: self-feeding captured graph (token feedback, mask and position computation in-graph) with a torch.compile'd (max-autotune-no-cudagraphs) decode step, prefill written directly into the StaticCache.",
+    "configuration": "faster-qwen-asr CUDA graph decode is the default path: self-feeding captured graph (token feedback, mask and position computation in-graph) with a torch.compile'd (max-autotune-no-cudagraphs) decode step, prefill written directly into the StaticCache.",
     "correctness": "bf16 transcripts byte-identical to the pre-optimization implementation on a 4-clip x 2-size x 2-path verification set. int8: 7/8 transcripts identical, one clip changed a single word.",
     "previous_baseline": "Pre-optimization (commit 20ee9b1, 11.0s JFK clip): 0.6B dynamic 0.3951s / graph 0.2863s; 1.7B dynamic 1.5435s / graph 0.6296s."
   }
