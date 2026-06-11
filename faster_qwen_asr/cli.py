@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-cuda-graph", action="store_true", help="disable Torch backend CUDA graph decode")
     parser.add_argument("--cuda-graph-stride", type=int, default=128, help="Torch backend graph cache bucket size")
     parser.add_argument("--no-torch-compile", action="store_true", help="disable torch.compile of the CUDA graph decode step")
+    parser.add_argument("--quantization", default=None, choices=["int8"], help="weight-only quantization of the text decoder (torch backend)")
     parser.add_argument("--local-files-only", action="store_true", help="use only cached model files")
     parser.add_argument("--timestamps", action="store_true", help="return forced-alignment timestamps")
     parser.add_argument("--forced-aligner", default=None, help="forced aligner repo id or local path")
@@ -72,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         use_cuda_graph=not args.no_cuda_graph,
         cuda_graph_stride=args.cuda_graph_stride,
         use_torch_compile=not args.no_torch_compile,
+        quantization=args.quantization,
         local_files_only=args.local_files_only,
     )
     load_time = time.perf_counter() - start_load

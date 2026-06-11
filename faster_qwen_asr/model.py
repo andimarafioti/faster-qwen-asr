@@ -88,12 +88,19 @@ class QwenASR:
         use_cuda_graph: bool = True,
         cuda_graph_stride: int = 128,
         use_torch_compile: bool = True,
+        quantization: str | None = None,
         trust_remote_code: bool | None = None,
         **backend_kwargs: Any,
     ) -> "QwenASR":
         model_id = resolve_model_id(model=model, size=size)
         selected_backend = _select_backend(backend, device)
         _enable_cuda_defaults()
+
+        if quantization and selected_backend != "torch":
+            raise ValueError(
+                f"quantization={quantization!r} is only supported by the torch backend, "
+                f"got backend={selected_backend!r}."
+            )
 
         if selected_backend == "vllm":
             qwen_model_cls = _load_qwen_model_cls()
@@ -136,6 +143,7 @@ class QwenASR:
                 use_cuda_graph=use_cuda_graph,
                 cuda_graph_stride=cuda_graph_stride,
                 use_torch_compile=use_torch_compile,
+                quantization=quantization,
                 attn_implementation=torch_attn_implementation,
                 **model_kwargs,
             )

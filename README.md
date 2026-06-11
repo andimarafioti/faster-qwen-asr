@@ -42,6 +42,12 @@ compile cost (seconds with a warm inductor cache, up to ~1 minute cold), and a
 request longer than any previous one re-captures at a larger cache size and
 pays it again.
 
+Optional int8 weight-only quantization of the text decoder
+(`pip install 'faster-qwen-asr[quant]'`, then `quantization="int8"` or
+`--quantization int8`) roughly halves decode time again. It is off by default
+because it changes the weights' numerics; transcripts may differ slightly from
+bf16 on some clips, so spot-check on your own data before enabling it.
+
 ## Benchmarks
 
 ```bash
