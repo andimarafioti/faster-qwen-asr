@@ -47,6 +47,7 @@ class TorchQwenASRBackend:
         self.attn_implementation = attn_implementation
         self.device = getattr(official_model, "device", None)
         self.dtype = getattr(official_model, "dtype", None)
+        self.eos_token_ids = _resolve_eos_token_ids(self.model)
         self._graph: _DecoderGraph | None = None
         self._graph_failed = False
         if attn_implementation:
@@ -190,7 +191,7 @@ class TorchQwenASRBackend:
 
         prompt = self.official_model._build_text_prompt(context=context, force_language=language)
         inputs = self.processor(text=[prompt], audio=[wav], return_tensors="pt", padding=True)
-        inputs = inputs.to(self.model.device).to(self.model.dtype)
+        inputs = inputs.to(self.model.device, self.model.dtype)
 
         with torch.inference_mode():
             generated = None
@@ -273,32 +274,29 @@ class TorchQwenASRBackend:
 
         thinker = self.model.thinker
         current_token = torch.argmax(last_logits[:, -1, :], dim=-1, keepdim=True)
-        current_attention_mask = attention_mask
-        one = torch.ones(
-            (current_attention_mask.shape[0], 1),
-            dtype=current_attention_mask.dtype,
-            device=current_attention_mask.device,
+        prompt_len = attention_mask.shape[1]
+        device = attention_mask.device
+        full_mask = torch.ones(
+            (attention_mask.shape[0], prompt_len + self.max_new_tokens),
+            dtype=attention_mask.dtype,
+            device=device,
         )
+        full_mask[:, :prompt_len] = attention_mask
+        positions = torch.arange(prompt_len, prompt_len + self.max_new_tokens, device=device)
         generated: list[int] = []
 
-        for _ in range(self.max_new_tokens):
+        for step in range(self.max_new_tokens):
             token_id = int(current_token.item())
-            if token_id in _EOS_TOKEN_IDS:
+            if token_id in self.eos_token_ids:
                 break
             generated.append(token_id)
 
-            current_attention_mask = torch.cat([current_attention_mask, one], dim=1)
-            cache_position = torch.tensor(
-                [current_attention_mask.shape[1] - 1],
-                dtype=torch.long,
-                device=current_attention_mask.device,
-            )
             outputs = thinker(
                 input_ids=current_token,
-                attention_mask=current_attention_mask,
+                attention_mask=full_mask[:, : prompt_len + step + 1],
                 past_key_values=past_key_values,
                 use_cache=True,
-                cache_position=cache_position,
+                cache_position=positions[step : step + 1],
             )
             past_key_values = outputs.past_key_values
             current_token = torch.argmax(outputs.logits[:, -1, :], dim=-1, keepdim=True)
@@ -333,6 +331,7 @@ class TorchQwenASRBackend:
                 max_cache_len=_round_up(required_cache_len, self.cuda_graph_stride),
                 dtype=self.model.dtype,
                 device=str(self.model.device),
+                eos_token_ids=self.eos_token_ids,
             )
             self._graph = graph
 
@@ -376,12 +375,14 @@ class _DecoderGraph:
         max_cache_len: int,
         dtype: Any,
         device: str,
+        eos_token_ids: frozenset[int] = _EOS_TOKEN_IDS,
         eos_check_interval: int = 1,
     ) -> None:
         import torch
         from transformers import StaticCache
 
         self.thinker = thinker
+        self.eos_token_ids = eos_token_ids
         self.text_model = thinker.model
         self.max_cache_len = int(max_cache_len)
         self.dtype = dtype
@@ -467,7 +468,7 @@ class _DecoderGraph:
     def run(self, last_logits: Any, rope_deltas: Any, *, input_len: int, max_new_tokens: int) -> list[int]:
         first_token = self._seed(last_logits, rope_deltas, input_len)
         first = int(first_token.item())
-        if first in _EOS_TOKEN_IDS:
+        if first in self.eos_token_ids:
             return []
         generated = [first]
 
@@ -480,12 +481,22 @@ class _DecoderGraph:
             for _ in range(steps):
                 self.graph.replay()
             for token_id in self.token_ring[done : done + steps].tolist():
-                if token_id in _EOS_TOKEN_IDS:
+                if token_id in self.eos_token_ids:
                     return generated
                 generated.append(token_id)
             done += steps
 
         return generated
+
+
+def _resolve_eos_token_ids(model: Any) -> frozenset[int]:
+    eos = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
+    if eos is None:
+        return _EOS_TOKEN_IDS
+    if isinstance(eos, int):
+        return frozenset({eos})
+    ids = frozenset(int(token_id) for token_id in eos)
+    return ids or _EOS_TOKEN_IDS
 
 
 def _normalize_audios(audio: Any) -> list[Any]:
