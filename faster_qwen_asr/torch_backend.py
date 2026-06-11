@@ -35,6 +35,7 @@ class TorchQwenASRBackend:
         max_inference_batch_size: int = 32,
         use_cuda_graph: bool = True,
         cuda_graph_stride: int = 128,
+        use_torch_compile: bool = True,
         attn_implementation: str | None = None,
     ) -> None:
         self.official_model = official_model
@@ -44,6 +45,7 @@ class TorchQwenASRBackend:
         self.max_inference_batch_size = int(max_inference_batch_size)
         self.use_cuda_graph = bool(use_cuda_graph)
         self.cuda_graph_stride = max(1, int(cuda_graph_stride))
+        self.use_torch_compile = bool(use_torch_compile)
         self.attn_implementation = attn_implementation
         self.device = getattr(official_model, "device", None)
         self.dtype = getattr(official_model, "dtype", None)
@@ -62,6 +64,7 @@ class TorchQwenASRBackend:
         max_inference_batch_size: int = 32,
         use_cuda_graph: bool = True,
         cuda_graph_stride: int = 128,
+        use_torch_compile: bool = True,
         attn_implementation: str | None = None,
         forced_aligner: str | None = None,
         forced_aligner_kwargs: dict[str, Any] | None = None,
@@ -83,6 +86,7 @@ class TorchQwenASRBackend:
             max_inference_batch_size=max_inference_batch_size,
             use_cuda_graph=use_cuda_graph,
             cuda_graph_stride=cuda_graph_stride,
+            use_torch_compile=use_torch_compile,
             attn_implementation=attn_implementation,
         )
 
@@ -332,6 +336,7 @@ class TorchQwenASRBackend:
                 dtype=self.model.dtype,
                 device=str(self.model.device),
                 eos_token_ids=self.eos_token_ids,
+                compile_decode=self.use_torch_compile,
             )
             self._graph = graph
 
@@ -377,12 +382,14 @@ class _DecoderGraph:
         device: str,
         eos_token_ids: frozenset[int] = _EOS_TOKEN_IDS,
         eos_check_interval: int = 1,
+        compile_decode: bool = True,
     ) -> None:
         import torch
         from transformers import StaticCache
 
         self.thinker = thinker
         self.eos_token_ids = eos_token_ids
+        self.compile_decode = bool(compile_decode)
         self.text_model = thinker.model
         self.max_cache_len = int(max_cache_len)
         self.dtype = dtype
@@ -443,9 +450,25 @@ class _DecoderGraph:
     def capture(self, last_logits: Any, rope_deltas: Any, *, input_len: int) -> None:
         import torch
 
+        if self.compile_decode:
+            try:
+                # Fuses the step's elementwise soup (rmsnorm/rotary/silu chains)
+                # and picks better matmul kernels before the graph freezes the
+                # kernel sequence; "no-cudagraphs" because we capture ourselves.
+                step = torch.compile(self._decode_step, mode="max-autotune-no-cudagraphs")
+                self._capture_step(step, last_logits, rope_deltas, input_len)
+                return
+            except Exception:
+                self.graph = None
+                self.captured = False
+        self._capture_step(self._decode_step, last_logits, rope_deltas, input_len)
+
+    def _capture_step(self, step: Any, last_logits: Any, rope_deltas: Any, input_len: int) -> None:
+        import torch
+
         self._seed(last_logits, rope_deltas, input_len)
         for _ in range(3):
-            self._decode_step()
+            step()
         torch.cuda.synchronize()
 
         with torch.cuda.device(self.device_index):
@@ -453,13 +476,13 @@ class _DecoderGraph:
             stream.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(stream):
                 self._seed(last_logits, rope_deltas, input_len)
-                self._decode_step()
+                step()
                 torch.cuda.synchronize()
 
                 self._seed(last_logits, rope_deltas, input_len)
                 self.graph = torch.cuda.CUDAGraph()
                 with torch.cuda.graph(self.graph):
-                    self._decode_step()
+                    step()
 
             torch.cuda.current_stream().wait_stream(stream)
         torch.cuda.synchronize()

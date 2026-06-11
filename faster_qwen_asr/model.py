@@ -87,6 +87,7 @@ class QwenASR:
         gpu_memory_utilization: float = 0.8,
         use_cuda_graph: bool = True,
         cuda_graph_stride: int = 128,
+        use_torch_compile: bool = True,
         trust_remote_code: bool | None = None,
         **backend_kwargs: Any,
     ) -> "QwenASR":
@@ -134,6 +135,7 @@ class QwenASR:
                 max_new_tokens=max_new_tokens,
                 use_cuda_graph=use_cuda_graph,
                 cuda_graph_stride=cuda_graph_stride,
+                use_torch_compile=use_torch_compile,
                 attn_implementation=torch_attn_implementation,
                 **model_kwargs,
             )

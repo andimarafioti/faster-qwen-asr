@@ -34,6 +34,7 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--no-cuda-graph", action="store_true")
     parser.add_argument("--cuda-graph-stride", type=int, default=128)
+    parser.add_argument("--no-torch-compile", action="store_true")
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--repeat", type=int, default=1, help="repeat the same audio N times as a batch")
     parser.add_argument("--warmup", type=int, default=1)
@@ -53,6 +54,7 @@ def main() -> int:
         max_batch_size=args.batch_size,
         use_cuda_graph=not args.no_cuda_graph,
         cuda_graph_stride=args.cuda_graph_stride,
+        use_torch_compile=not args.no_torch_compile,
         local_files_only=args.local_files_only,
     )
 
