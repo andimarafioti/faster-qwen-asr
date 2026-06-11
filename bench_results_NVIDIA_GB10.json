@@ -1,6 +1,6 @@
 {
-  "date": "2026-06-11",
-  "repo_commit": "8f0f451",
+  "date": "2026-06-12",
+  "repo_commit": "31e6dbf",
   "hardware": {
     "gpu": "NVIDIA GB10",
     "driver": "580.126.09",
@@ -19,7 +19,8 @@
     "batch_size": 1,
     "warmup": "1+ (graph runs include the one-time torch.compile in warmup)",
     "runs": 5,
-    "metric": "best wall time after CUDA synchronize for Torch paths; direct vLLM uses synchronous llm.chat wall time"
+    "metric": "best wall time after CUDA synchronize for Torch paths; direct vLLM uses synchronous llm.chat wall time",
+    "note": "All Torch-stack entries remeasured 2026-06-12 with GPU mel feature extraction (gpu-feature-extraction branch). Direct vLLM entries are from the 2026-06-11 run on their own documented stack."
   },
   "baseline": {
     "name": "qwen-asr (official, https://github.com/QwenLM/Qwen3-ASR)",
@@ -34,20 +35,21 @@
       "transformers": "5.6.1",
       "cuda": "13.0"
     },
-    "package_stack_note": "The exact qwen-asr[vllm] package stack (qwen-asr 0.0.6, vLLM 0.14.0, transformers 4.57.6) could not be benchmarked on this GB10 CUDA 13 host because the available vLLM 0.14 wheel was linked against CUDA 12 (libcudart.so.12)."
+    "package_stack_note": "The exact qwen-asr[vllm] package stack (qwen-asr 0.0.6, vLLM 0.14.0, transformers 4.57.6) could not be benchmarked on this GB10 CUDA 13 host because the available vLLM 0.14 wheel was linked against CUDA 12 (libcudart.so.12).",
+    "measured": "2026-06-11"
   },
   "results": {
     "0.6B": {
       "qwen_asr_official": {
-        "best_sec": 0.4047,
+        "best_sec": 0.4126,
         "audio_sec": 10.9,
-        "rtf": 26.94
+        "rtf": 26.47
       },
       "direct_vllm_compiled_graphs": {
         "best_sec": 0.2933,
         "audio_sec": 10.9227,
         "rtf": 37.24,
-        "speedup_vs_qwen_asr_transformers": 1.38,
+        "speedup_vs_qwen_asr_transformers": 1.41,
         "faster_qwen_asr_bf16_speedup_vs_direct_vllm": 1.43,
         "note": "vLLM compile/CUDA graph path enabled"
       },
@@ -58,38 +60,38 @@
         "note": "vLLM enforce_eager=True; torch.compile and CUDA graphs disabled"
       },
       "faster_qwen_asr_dynamic_decode": {
-        "best_sec": 0.4767,
+        "best_sec": 0.4863,
         "audio_sec": 10.9,
-        "rtf": 22.91,
+        "rtf": 22.46,
         "note": "internal fallback path (--no-cuda-graph), manual greedy decode"
       },
       "faster_qwen_asr_cuda_graph": {
-        "best_sec": 0.2044,
+        "best_sec": 0.2046,
         "audio_sec": 10.9,
-        "rtf": 53.45,
-        "speedup_vs_qwen_asr": 1.98
+        "rtf": 53.4,
+        "speedup_vs_qwen_asr": 2.02
       },
       "faster_qwen_asr_cuda_graph_int8": {
-        "best_sec": 0.1458,
+        "best_sec": 0.1404,
         "audio_sec": 10.9,
-        "rtf": 74.89,
-        "speedup_vs_qwen_asr": 2.78,
-        "speedup_vs_bf16_graph": 1.4,
+        "rtf": 77.81,
+        "speedup_vs_qwen_asr": 2.94,
+        "speedup_vs_bf16_graph": 1.46,
         "quantization": "int8 weight-only (torchao), text decoder + lm_head only, opt-in"
       }
     },
     "1.7B": {
       "qwen_asr_official": {
-        "best_sec": 0.8131,
+        "best_sec": 0.8513,
         "audio_sec": 10.9,
-        "rtf": 13.41
+        "rtf": 12.83
       },
       "direct_vllm_compiled_graphs": {
         "best_sec": 0.7361,
         "audio_sec": 10.9227,
         "rtf": 14.84,
-        "speedup_vs_qwen_asr_transformers": 1.1,
-        "faster_qwen_asr_bf16_speedup_vs_direct_vllm": 1.53,
+        "speedup_vs_qwen_asr_transformers": 1.16,
+        "faster_qwen_asr_bf16_speedup_vs_direct_vllm": 1.5,
         "note": "vLLM compile/CUDA graph path enabled"
       },
       "direct_vllm_eager": {
@@ -99,23 +101,23 @@
         "note": "vLLM enforce_eager=True; torch.compile and CUDA graphs disabled"
       },
       "faster_qwen_asr_dynamic_decode": {
-        "best_sec": 0.8989,
+        "best_sec": 0.9097,
         "audio_sec": 10.9,
-        "rtf": 12.15,
+        "rtf": 12.01,
         "note": "internal fallback path (--no-cuda-graph), manual greedy decode"
       },
       "faster_qwen_asr_cuda_graph": {
-        "best_sec": 0.4804,
+        "best_sec": 0.4918,
         "audio_sec": 10.9,
-        "rtf": 22.73,
-        "speedup_vs_qwen_asr": 1.69
+        "rtf": 22.21,
+        "speedup_vs_qwen_asr": 1.73
       },
       "faster_qwen_asr_cuda_graph_int8": {
-        "best_sec": 0.3117,
+        "best_sec": 0.3087,
         "audio_sec": 10.9,
-        "rtf": 35.04,
-        "speedup_vs_qwen_asr": 2.61,
-        "speedup_vs_bf16_graph": 1.54,
+        "rtf": 35.38,
+        "speedup_vs_qwen_asr": 2.76,
+        "speedup_vs_bf16_graph": 1.59,
         "quantization": "int8 weight-only (torchao), text decoder + lm_head only, opt-in"
       }
     }

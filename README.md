@@ -63,7 +63,7 @@ baseline against CUDA graph decode.
 
 ### NVIDIA GB10
 
-Measured on June 11, 2026 with PyTorch 2.11.0+cu130, CUDA 13.0, driver
+Measured on June 12, 2026 with PyTorch 2.11.0+cu130, CUDA 13.0, driver
 580.126.09. Audio was a 10.9s 16 kHz mono English clip, forced English, bf16,
 batch size 1, warmups excluded (the first CUDA graph request pays the one-time
 `torch.compile` cost), best of five timed runs. RTF > 1.0 is faster than real
@@ -72,17 +72,18 @@ time.
 The baseline is the official [`qwen-asr`](https://github.com/QwenLM/Qwen3-ASR)
 toolkit running its transformers backend (SDPA, `generate()`-based decoding),
 called directly without this wrapper. The faster-qwen-asr column is this
-repo's default Torch path: self-feeding CUDA graph decode with a compiled
-decode step.
+repo's default Torch path: GPU mel feature extraction and self-feeding CUDA
+graph decode with a compiled decode step.
 
 **Full precision (bf16)**
 
 | Model | qwen-asr transformers | direct vLLM | faster-qwen-asr | Speedup vs transformers | Speedup vs vLLM |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-ASR-0.6B | 0.4047s / RTF 26.94 | 0.2933s / RTF 37.24 | 0.2044s / RTF 53.45 | 1.98x | 1.43x |
-| Qwen3-ASR-1.7B | 0.8131s / RTF 13.41 | 0.7361s / RTF 14.84 | 0.4804s / RTF 22.73 | 1.69x | 1.53x |
+| Qwen3-ASR-0.6B | 0.4126s / RTF 26.47 | 0.2933s / RTF 37.24 | 0.2046s / RTF 53.40 | 2.02x | 1.43x |
+| Qwen3-ASR-1.7B | 0.8513s / RTF 12.83 | 0.7361s / RTF 14.84 | 0.4918s / RTF 22.21 | 1.73x | 1.50x |
 
-The direct vLLM numbers use the official README's `vllm.LLM(...).chat(...)`
+The direct vLLM numbers were measured on June 11, 2026 using the official
+README's `vllm.LLM(...).chat(...)`
 deployment path on a CUDA 13-capable stack: vLLM 0.19.1+cu130,
 PyTorch 2.10.0+cu130, transformers 5.6.1, `max_model_len=4096`,
 `gpu_memory_utilization=0.65`, asynchronous scheduling disabled, and vLLM's
@@ -98,8 +99,8 @@ For reference, direct vLLM in eager mode (compile/CUDA graphs disabled) measured
 
 | Model | Latency | RTF | Speedup vs qwen-asr | Speedup vs bf16 |
 | --- | ---: | ---: | ---: | ---: |
-| Qwen3-ASR-0.6B | 0.1458s | 74.89 | 2.78x | 1.40x |
-| Qwen3-ASR-1.7B | 0.3117s | 35.04 | 2.61x | 1.54x |
+| Qwen3-ASR-0.6B | 0.1404s | 77.81 | 2.94x | 1.46x |
+| Qwen3-ASR-1.7B | 0.3087s | 35.38 | 2.76x | 1.59x |
 
 The bf16 fast path produces transcripts byte-identical to its greedy dynamic
 decode on the verification set. int8 quantizes the text decoder weights, so
