@@ -35,7 +35,12 @@ faster-qwen-asr sample.wav --size 0.6B --backend torch --dtype bf16 --language E
 
 The Torch backend uses a manual greedy decoder and enables CUDA defaults when a
 CUDA device is available. CUDA graph decode is on by default and can be disabled
-with `--no-cuda-graph`.
+with `--no-cuda-graph`. The decode step inside the graph is compiled with
+`torch.compile` before capture (disable with `--no-torch-compile` or
+`use_torch_compile=False`); the first request after loading pays a one-time
+compile cost (seconds with a warm inductor cache, up to ~1 minute cold), and a
+request longer than any previous one re-captures at a larger cache size and
+pays it again.
 
 ## Benchmarks
 
