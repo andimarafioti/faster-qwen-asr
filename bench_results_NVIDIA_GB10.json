@@ -1,6 +1,6 @@
 {
-  "date": "2026-06-10",
-  "repo_commit": "20ee9b1",
+  "date": "2026-06-11",
+  "repo_commit": "8f0f451",
   "hardware": {
     "gpu": "NVIDIA GB10",
     "driver": "580.126.09",
@@ -8,8 +8,8 @@
     "cuda": "13.0"
   },
   "audio": {
-    "name": "jfk.wav",
-    "duration_sec": 11.0,
+    "name": "ref2_16k.wav",
+    "duration_sec": 10.9,
     "sample_rate_hz": 16000,
     "channels": 1
   },
@@ -18,62 +18,57 @@
     "dtype": "bf16",
     "language": "English",
     "batch_size": 1,
-    "warmup": 1,
+    "warmup": "1 (dynamic) / 2 (graph, includes one-time torch.compile)",
     "runs": 5,
     "metric": "best wall time after CUDA synchronize"
   },
   "results": {
     "0.6B": {
       "dynamic_decode": {
-        "best_sec": 0.3951,
-        "audio_sec": 11.0,
-        "rtf": 27.84
+        "best_sec": 0.4767,
+        "audio_sec": 10.9,
+        "rtf": 22.91
       },
       "cuda_graph_decode": {
-        "best_sec": 0.2863,
-        "audio_sec": 11.0,
-        "rtf": 38.42
+        "best_sec": 0.2044,
+        "audio_sec": 10.9,
+        "rtf": 53.45,
+        "speedup_vs_dynamic": 2.33
       },
-      "speedup": 1.38
+      "cuda_graph_decode_int8": {
+        "best_sec": 0.1458,
+        "audio_sec": 10.9,
+        "rtf": 74.89,
+        "speedup_vs_dynamic": 3.27,
+        "speedup_vs_bf16_graph": 1.4,
+        "quantization": "int8 weight-only (torchao), text decoder + lm_head only, opt-in"
+      }
     },
     "1.7B": {
       "dynamic_decode": {
-        "best_sec": 1.5435,
-        "audio_sec": 11.0,
-        "rtf": 7.13
+        "best_sec": 0.8989,
+        "audio_sec": 10.9,
+        "rtf": 12.15
       },
       "cuda_graph_decode": {
-        "best_sec": 0.6296,
-        "audio_sec": 11.0,
-        "rtf": 17.47
+        "best_sec": 0.4804,
+        "audio_sec": 10.9,
+        "rtf": 22.73,
+        "speedup_vs_dynamic": 1.87
       },
-      "speedup": 2.45
+      "cuda_graph_decode_int8": {
+        "best_sec": 0.3117,
+        "audio_sec": 10.9,
+        "rtf": 35.04,
+        "speedup_vs_dynamic": 2.88,
+        "speedup_vs_bf16_graph": 1.54,
+        "quantization": "int8 weight-only (torchao), text decoder + lm_head only, opt-in"
+      }
     }
   },
-  "stage_profile_best_ms": {
-    "0.6B": {
-      "dynamic_decode": {
-        "prefill": 23.678,
-        "decode": 362.51,
-        "total": 396.072
-      },
-      "cuda_graph_decode": {
-        "prefill": 24.179,
-        "decode": 252.902,
-        "total": 287.198
-      }
-    },
-    "1.7B": {
-      "dynamic_decode": {
-        "prefill": 81.195,
-        "decode": 1533.138,
-        "total": 1646.427
-      },
-      "cuda_graph_decode": {
-        "prefill": 40.561,
-        "decode": 560.703,
-        "total": 615.467
-      }
-    }
+  "notes": {
+    "configuration": "CUDA graph decode is the default path: self-feeding captured graph (token feedback, mask and position computation in-graph) with a torch.compile'd (max-autotune-no-cudagraphs) decode step, prefill written directly into the StaticCache.",
+    "correctness": "bf16 transcripts byte-identical to the pre-optimization implementation on a 4-clip x 2-size x 2-path verification set. int8: 7/8 transcripts identical, one clip changed a single word.",
+    "previous_baseline": "Pre-optimization (commit 20ee9b1, 11.0s JFK clip): 0.6B dynamic 0.3951s / graph 0.2863s; 1.7B dynamic 1.5435s / graph 0.6296s."
   }
 }

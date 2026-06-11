@@ -62,15 +62,32 @@ baseline against CUDA graph decode.
 
 ### NVIDIA GB10
 
-Measured on June 10, 2026 with PyTorch 2.11.0+cu130, CUDA 13.0, driver
-580.126.09. Audio was an 11.0s 16 kHz mono JFK clip, forced English,
-`--backend torch --dtype bf16`, one warmup, five timed runs. RTF > 1.0 is faster
-than real time.
+Measured on June 11, 2026 with PyTorch 2.11.0+cu130, CUDA 13.0, driver
+580.126.09. Audio was a 10.9s 16 kHz mono English clip, forced English,
+`--backend torch --dtype bf16`, warmups excluded (the first CUDA graph request
+pays the one-time `torch.compile` cost), five timed runs. The baseline is the
+plain Torch dynamic greedy decode (`--no-cuda-graph`); the CUDA graph column is
+the default configuration (self-feeding captured graph with a compiled decode
+step). RTF > 1.0 is faster than real time.
+
+**Full precision (bf16)**
 
 | Model | Dynamic decode latency | Dynamic RTF | CUDA graph latency | CUDA graph RTF | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-ASR-0.6B | 0.3951s | 27.84 | 0.2863s | 38.42 | 1.38x |
-| Qwen3-ASR-1.7B | 1.5435s | 7.13 | 0.6296s | 17.47 | 2.45x |
+| Qwen3-ASR-0.6B | 0.4767s | 22.91 | 0.2044s | 53.45 | 2.33x |
+| Qwen3-ASR-1.7B | 0.8989s | 12.15 | 0.4804s | 22.73 | 1.87x |
+
+**int8 weight-only (opt-in, `--quantization int8`)**
+
+| Model | Latency | RTF | Speedup vs dynamic | Speedup vs bf16 graph |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3-ASR-0.6B | 0.1458s | 74.89 | 3.27x | 1.40x |
+| Qwen3-ASR-1.7B | 0.3117s | 35.04 | 2.88x | 1.54x |
+
+The bf16 configurations produce transcripts byte-identical to the
+pre-optimization implementation. int8 quantizes the text decoder weights, so
+its transcripts are not guaranteed identical to bf16: on a 4-clip verification
+set, 7/8 matched exactly and one clip changed a single word.
 
 Full run metadata is in `bench_results_NVIDIA_GB10.json`.
 
