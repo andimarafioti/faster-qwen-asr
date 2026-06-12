@@ -200,7 +200,7 @@ class TorchQwenASRBackend:
         import torch
 
         prompt = self.official_model._build_text_prompt(context=context, force_language=language)
-        inputs = self.processor(text=[prompt], audio=[wav], return_tensors="pt", padding=True)
+        inputs = self._prepare_inputs(prompt, wav)
         inputs = inputs.to(self.model.device, self.model.dtype)
 
         with torch.inference_mode():
@@ -227,6 +227,45 @@ class TorchQwenASRBackend:
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
         )[0]
+
+    def _prepare_inputs(self, prompt: str, wav: Any) -> Any:
+        """Build model inputs, running feature extraction on the GPU when possible.
+
+        `Qwen3ASRProcessor.__call__` drops the feature extractor's `device`
+        kwarg, so the whole mel stage runs on CPU (~5-10 ms per request and
+        scheduling-noise prone). Replicating its assembly here lets torch.stft
+        and the mel matmul run on the model device instead (~0.3 ms).
+        """
+        device = str(self.model.device)
+        if not device.startswith("cuda"):
+            return self.processor(text=[prompt], audio=[wav], return_tensors="pt", padding=True)
+
+        from qwen_asr.core.transformers_backend.processing_qwen3_asr import (
+            _get_feat_extract_output_lengths,
+        )
+        from transformers import BatchFeature
+
+        audio_inputs = self.processor.feature_extractor(
+            [wav],
+            sampling_rate=16000,
+            padding=True,
+            truncation=False,
+            return_attention_mask=True,
+            return_tensors="pt",
+            device=device,
+        )
+        feature_attention_mask = audio_inputs.pop("attention_mask")
+        input_features = audio_inputs.pop("input_features")
+        audio_lengths = iter(_get_feat_extract_output_lengths(feature_attention_mask.sum(-1)))
+        text = self.processor.replace_multimodal_special_tokens([prompt], audio_lengths)
+        text_inputs = self.processor.tokenizer(text, return_tensors="pt", padding=True)
+        return BatchFeature(
+            data={
+                **text_inputs,
+                "input_features": input_features,
+                "feature_attention_mask": feature_attention_mask,
+            }
+        )
 
     def _can_use_cuda_graph(self, torch: Any) -> bool:
         return (

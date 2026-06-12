@@ -63,7 +63,7 @@ baseline against CUDA graph decode.
 
 ### NVIDIA GB10
 
-Measured on June 11, 2026 with PyTorch 2.11.0+cu130, CUDA 13.0, driver
+Measured on June 12, 2026 with PyTorch 2.11.0+cu130, CUDA 13.0, driver
 580.126.09. Audio was a 10.9s 16 kHz mono English clip, forced English, bf16,
 batch size 1, warmups excluded (the first CUDA graph request pays the one-time
 `torch.compile` cost), best of five timed runs. RTF > 1.0 is faster than real
@@ -72,17 +72,24 @@ time.
 The baseline is the official [`qwen-asr`](https://github.com/QwenLM/Qwen3-ASR)
 toolkit running its transformers backend (SDPA, `generate()`-based decoding),
 called directly without this wrapper. The faster-qwen-asr column is this
-repo's default Torch path: self-feeding CUDA graph decode with a compiled
-decode step.
+repo's default Torch path: GPU mel feature extraction and self-feeding CUDA
+graph decode with a compiled decode step.
+
+To isolate the GPU feature extraction change from normal session-to-session
+variance, the CPU and GPU preprocessing paths were also measured in the same
+process by swapping only the input preparation function. Median graph-path
+latency dropped from 216.7ms to 206.0ms on 0.6B and from 503.0ms to 493.7ms on
+1.7B.
 
 **Full precision (bf16)**
 
 | Model | qwen-asr transformers | direct vLLM | faster-qwen-asr | Speedup vs transformers | Speedup vs vLLM |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-ASR-0.6B | 0.4047s / RTF 26.94 | 0.2933s / RTF 37.24 | 0.2044s / RTF 53.45 | 1.98x | 1.43x |
-| Qwen3-ASR-1.7B | 0.8131s / RTF 13.41 | 0.7361s / RTF 14.84 | 0.4804s / RTF 22.73 | 1.69x | 1.53x |
+| Qwen3-ASR-0.6B | 0.4119s / RTF 26.52 | 0.2933s / RTF 37.24 | 0.2058s / RTF 53.07 | 2.00x | 1.43x |
+| Qwen3-ASR-1.7B | 0.8464s / RTF 12.91 | 0.7361s / RTF 14.84 | 0.4890s / RTF 22.34 | 1.73x | 1.51x |
 
-The direct vLLM numbers use the official README's `vllm.LLM(...).chat(...)`
+The direct vLLM numbers were measured on June 11, 2026 using the official
+README's `vllm.LLM(...).chat(...)`
 deployment path on a CUDA 13-capable stack: vLLM 0.19.1+cu130,
 PyTorch 2.10.0+cu130, transformers 5.6.1, `max_model_len=4096`,
 `gpu_memory_utilization=0.65`, asynchronous scheduling disabled, and vLLM's
@@ -98,8 +105,8 @@ For reference, direct vLLM in eager mode (compile/CUDA graphs disabled) measured
 
 | Model | Latency | RTF | Speedup vs qwen-asr | Speedup vs bf16 |
 | --- | ---: | ---: | ---: | ---: |
-| Qwen3-ASR-0.6B | 0.1458s | 74.89 | 2.78x | 1.40x |
-| Qwen3-ASR-1.7B | 0.3117s | 35.04 | 2.61x | 1.54x |
+| Qwen3-ASR-0.6B | 0.1388s | 78.68 | 2.97x | 1.48x |
+| Qwen3-ASR-1.7B | 0.3097s | 35.27 | 2.73x | 1.58x |
 
 The bf16 fast path produces transcripts byte-identical to its greedy dynamic
 decode on the verification set. int8 quantizes the text decoder weights, so
