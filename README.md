@@ -75,12 +75,18 @@ called directly without this wrapper. The faster-qwen-asr column is this
 repo's default Torch path: GPU mel feature extraction and self-feeding CUDA
 graph decode with a compiled decode step.
 
+To isolate the GPU feature extraction change from normal session-to-session
+variance, the CPU and GPU preprocessing paths were also measured in the same
+process by swapping only the input preparation function. Median graph-path
+latency dropped from 216.7ms to 206.0ms on 0.6B and from 503.0ms to 493.7ms on
+1.7B.
+
 **Full precision (bf16)**
 
 | Model | qwen-asr transformers | direct vLLM | faster-qwen-asr | Speedup vs transformers | Speedup vs vLLM |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-ASR-0.6B | 0.4126s / RTF 26.47 | 0.2933s / RTF 37.24 | 0.2046s / RTF 53.40 | 2.02x | 1.43x |
-| Qwen3-ASR-1.7B | 0.8513s / RTF 12.83 | 0.7361s / RTF 14.84 | 0.4918s / RTF 22.21 | 1.73x | 1.50x |
+| Qwen3-ASR-0.6B | 0.4119s / RTF 26.52 | 0.2933s / RTF 37.24 | 0.2058s / RTF 53.07 | 2.00x | 1.43x |
+| Qwen3-ASR-1.7B | 0.8464s / RTF 12.91 | 0.7361s / RTF 14.84 | 0.4890s / RTF 22.34 | 1.73x | 1.51x |
 
 The direct vLLM numbers were measured on June 11, 2026 using the official
 README's `vllm.LLM(...).chat(...)`
@@ -99,8 +105,8 @@ For reference, direct vLLM in eager mode (compile/CUDA graphs disabled) measured
 
 | Model | Latency | RTF | Speedup vs qwen-asr | Speedup vs bf16 |
 | --- | ---: | ---: | ---: | ---: |
-| Qwen3-ASR-0.6B | 0.1404s | 77.81 | 2.94x | 1.46x |
-| Qwen3-ASR-1.7B | 0.3087s | 35.38 | 2.76x | 1.59x |
+| Qwen3-ASR-0.6B | 0.1388s | 78.68 | 2.97x | 1.48x |
+| Qwen3-ASR-1.7B | 0.3097s | 35.27 | 2.73x | 1.58x |
 
 The bf16 fast path produces transcripts byte-identical to its greedy dynamic
 decode on the verification set. int8 quantizes the text decoder weights, so
